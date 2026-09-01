@@ -1,4 +1,5 @@
 # calculadora-TPA
+```html
 <!DOCTYPE html>
 <html lang="pt-BR">
 
@@ -196,7 +197,7 @@ Extrato / contracheque — opcional
 >
 
 <div class="pequeno">
-Você pode informar o bruto manualmente ou anexar o extrato.
+Você pode informar o MMO manualmente ou anexar o extrato.
 </div>
 
 
@@ -209,7 +210,7 @@ Você pode informar o bruto manualmente ou anexar o extrato.
 
 
 <!-- =====================================
-     BRUTO
+     MMO
 ===================================== -->
 
 <label for="bruto">
@@ -662,6 +663,12 @@ fatura a fatura.
 
 <br><br>
 
+Férias e 13º utilizam o <strong>MMO Total</strong> como base
+de projeção. Quando o contracheque informa os valores
+efetivamente pagos, esses valores são priorizados.
+
+<br><br>
+
 O IRPF é calculado considerando a regra definida na
 calculadora: salário bruto + férias líquidas + 13º líquido.
 
@@ -693,7 +700,7 @@ if (window.pdfjsLib) {
 
 
 /* =====================================
-   VARIÁVEIS DO EXTRATO
+   DADOS DO EXTRATO
 ===================================== */
 
 let dadosExtrato = {
@@ -704,11 +711,64 @@ let dadosExtrato = {
 
     irrf: null,
 
+    feriasBruto: null,
+
     feriasLiquido: null,
+
+    feriasOutros: null,
+
+    decimoBruto: null,
+
+    inssDecimo: null,
+
+    outrosDecimo: null,
 
     decimoLiquido: null,
 
     engajamentos: []
+
+};
+
+
+
+/* =====================================
+   REFERÊNCIA REAL DO CONTRACHEQUE
+=====================================
+
+   MMO TOTAL      = 5.076,05
+
+   FÉRIAS
+   Bruto         = 615,17
+   Outros        = 88,99
+   Líquido       = 526,18
+
+   13º
+   Bruto         = 461,43
+   INSS          = 41,53
+   Outros        = 33,50
+   Líquido       = 386,40
+
+   Esses valores servem como referência
+   para a projeção proporcional pelo MMO.
+===================================== */
+
+const REFERENCIA = {
+
+    mmo: 5076.05,
+
+    feriasBruto: 615.17,
+
+    feriasOutros: 88.99,
+
+    feriasLiquido: 526.18,
+
+    decimoBruto: 461.43,
+
+    inssDecimo: 41.53,
+
+    outrosDecimo: 33.50,
+
+    decimoLiquido: 386.40
 
 };
 
@@ -750,14 +810,43 @@ function converterNumero(valor) {
     }
 
 
-    valor = String(valor)
-        .replace(/\s/g, "")
+    let texto =
+        String(valor)
+        .trim()
         .replace(/R\$/gi, "")
-        .replace(/\./g, "")
-        .replace(",", ".");
+        .replace(/\s/g, "");
 
 
-    return parseFloat(valor) || 0;
+    /*
+       Formato brasileiro:
+       5.076,05
+    */
+
+    if (
+        texto.includes(",")
+    ) {
+
+        texto =
+            texto
+            .replace(/\./g, "")
+            .replace(",", ".");
+
+    }
+
+    else {
+
+        /*
+           Permite também:
+           5076.05
+        */
+
+        texto =
+            texto.replace(/[^\d.-]/g, "");
+
+    }
+
+
+    return parseFloat(texto) || 0;
 
 }
 
@@ -778,58 +867,61 @@ function arredondar(valor) {
 
 
 /* =====================================
-   LOCALIZAR VALORES MONETÁRIOS
+   NORMALIZAR TEXTO DO PDF
 ===================================== */
 
-function extrairValores(texto) {
+function normalizarTexto(texto) {
 
-    const encontrados = [];
-
-    const regex =
-        /(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}/g;
-
-    const matches =
-        texto.match(regex) || [];
-
-
-    matches.forEach(valor => {
-
-        encontrados.push(
-            converterNumero(valor)
-        );
-
-    });
-
-
-    return encontrados;
+    return String(texto || "")
+        .replace(/\u00A0/g, " ")
+        .replace(/\r/g, "\n")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n[ \t]+/g, "\n")
+        .replace(/[º°]/g, "º")
+        .replace(/I\.N\.S\.S\./gi, "INSS")
+        .replace(/I\.R\.R\.F\./gi, "IRRF")
+        .replace(/I\.R\.P\.F\./gi, "IRPF")
+        .replace(/\n{3,}/g, "\n")
+        .trim();
 
 }
 
 
 
 /* =====================================
-   IDENTIFICAR VALOR APÓS UMA EXPRESSÃO
+   REGEX DE VALOR MONETÁRIO
 ===================================== */
 
-function valorDepoisDe(texto, expressao) {
-
-    const regex = new RegExp(
-
-        expressao +
-        "\\s*(?:[:=\\-])?\\s*" +
-        "(?:R\\$\\s*)?" +
-        "(\\d{1,3}(?:\\.\\d{3})*,\\d{2})",
-
-        "i"
-
-    );
+const REGEX_VALOR =
+    "(?:R\\$\\s*)?\\d{1,3}(?:\\.\\d{3})*,\\d{2}";
 
 
-    const resultado =
+
+/* =====================================
+   PEGAR PRIMEIRO VALOR DE UM TRECHO
+===================================== */
+
+function primeiroValor(texto) {
+
+    if (!texto) {
+
+        return null;
+
+    }
+
+
+    const regex =
+        new RegExp(
+            REGEX_VALOR,
+            "i"
+        );
+
+
+    const encontrado =
         texto.match(regex);
 
 
-    if (!resultado) {
+    if (!encontrado) {
 
         return null;
 
@@ -837,7 +929,7 @@ function valorDepoisDe(texto, expressao) {
 
 
     return converterNumero(
-        resultado[1]
+        encontrado[0]
     );
 
 }
@@ -845,15 +937,395 @@ function valorDepoisDe(texto, expressao) {
 
 
 /* =====================================
-   NORMALIZAR TEXTO
+   PEGAR VALOR DEPOIS DE UM RÓTULO
 ===================================== */
 
-function normalizarTexto(texto) {
+function valorDepoisDeRotulo(
+    texto,
+    rotulo
+) {
 
-    return texto
-        .replace(/\r/g, "\n")
-        .replace(/[ \t]+/g, " ")
-        .replace(/\n+/g, "\n");
+    if (!texto) {
+
+        return null;
+
+    }
+
+
+    const regex =
+        new RegExp(
+
+            rotulo +
+            "[^\\d]{0,100}" +
+            "(" +
+            REGEX_VALOR +
+            ")",
+
+            "i"
+
+        );
+
+
+    const encontrado =
+        texto.match(regex);
+
+
+    if (!encontrado) {
+
+        return null;
+
+    }
+
+
+    return converterNumero(
+        encontrado[1]
+    );
+
+}
+
+
+
+/* =====================================
+   LOCALIZAR VALOR NA MESMA LINHA
+===================================== */
+
+function valorNaLinha(
+    linhas,
+    rotuloRegex
+) {
+
+    for (
+        let i = 0;
+        i < linhas.length;
+        i++
+    ) {
+
+        if (
+            rotuloRegex.test(
+                linhas[i]
+            )
+        ) {
+
+            const valor =
+                primeiroValor(
+                    linhas[i]
+                );
+
+
+            if (
+                valor !== null
+            ) {
+
+                return valor;
+
+            }
+
+
+            /*
+               Se o PDF separou o rótulo
+               do valor em linhas diferentes,
+               procura nas próximas linhas.
+            */
+
+            for (
+                let j = i + 1;
+                j <= Math.min(
+                    i + 3,
+                    linhas.length - 1
+                );
+                j++
+            ) {
+
+                const proximo =
+                    primeiroValor(
+                        linhas[j]
+                    );
+
+
+                if (
+                    proximo !== null
+                ) {
+
+                    return proximo;
+
+                }
+
+            }
+
+        }
+
+    }
+
+
+    return null;
+
+}
+
+
+
+/* =====================================
+   LOCALIZAR VALOR ASSOCIADO A UM ITEM
+   EM TEXTO DE TABELA
+===================================== */
+
+function valorAssociado(
+    texto,
+    rotuloRegex,
+    limite = 300
+) {
+
+    const regexRotulo =
+        new RegExp(
+            rotuloRegex,
+            "i"
+        );
+
+
+    const encontrado =
+        regexRotulo.exec(texto);
+
+
+    if (!encontrado) {
+
+        return null;
+
+    }
+
+
+    const inicio =
+        encontrado.index +
+        encontrado[0].length;
+
+
+    const trecho =
+        texto.substring(
+            inicio,
+            inicio + limite
+        );
+
+
+    return primeiroValor(
+        trecho
+    );
+
+}
+
+
+
+/* =====================================
+   EXTRAIR FÉRIAS
+===================================== */
+
+function extrairFerias(texto) {
+
+    let bloco = "";
+
+
+    const inicio =
+        texto.search(
+            /F[ÉE]RIAS/i
+        );
+
+
+    if (
+        inicio >= 0
+    ) {
+
+        const fim =
+            texto.search(
+                /13\s*[ºo°]?\s*SAL[ÁA]RIO/i
+            );
+
+
+        if (
+            fim > inicio
+        ) {
+
+            bloco =
+                texto.substring(
+                    inicio,
+                    fim
+                );
+
+        }
+
+        else {
+
+            bloco =
+                texto.substring(
+                    inicio,
+                    inicio + 600
+                );
+
+        }
+
+    }
+
+
+    if (!bloco) {
+
+        return {
+
+            bruto: null,
+
+            liquido: null,
+
+            outros: null
+
+        };
+
+    }
+
+
+    /*
+       Tenta encontrar especificamente
+       o valor depois de "Líquido".
+    */
+
+    let liquido =
+        valorDepoisDeRotulo(
+            bloco,
+            "L[ií]quido"
+        );
+
+
+    /*
+       Se não encontrou "Líquido",
+       tenta "Férias Líquidas".
+    */
+
+    if (
+        liquido === null
+    ) {
+
+        liquido =
+            valorDepoisDeRotulo(
+                bloco,
+                "F[ée]rias\\s+L[ií]quidas?"
+            );
+
+    }
+
+
+    /*
+       Valor bruto de férias.
+    */
+
+    let bruto =
+        valorDepoisDeRotulo(
+            bloco,
+            "F[ée]rias"
+        );
+
+
+    /*
+       Outros.
+    */
+
+    let outros =
+        valorDepoisDeRotulo(
+            bloco,
+            "Outros"
+        );
+
+
+    return {
+
+        bruto:
+            bruto,
+
+        liquido:
+            liquido,
+
+        outros:
+            outros
+
+    };
+
+}
+
+
+
+/* =====================================
+   EXTRAIR 13º
+===================================== */
+
+function extrairDecimo(texto) {
+
+    const inicio =
+        texto.search(
+            /13\s*[ºo°]?\s*(?:SAL[ÁA]RIO)?/i
+        );
+
+
+    if (
+        inicio < 0
+    ) {
+
+        return {
+
+            bruto: null,
+
+            inss: null,
+
+            outros: null,
+
+            liquido: null
+
+        };
+
+    }
+
+
+    const bloco =
+        texto.substring(
+            inicio,
+            inicio + 700
+        );
+
+
+    let bruto =
+        primeiroValor(
+            bloco
+        );
+
+
+    let liquido =
+        valorDepoisDeRotulo(
+            bloco,
+            "L[ií]quido"
+        );
+
+
+    let inss =
+        valorDepoisDeRotulo(
+            bloco,
+            "INSS"
+        );
+
+
+    let outros =
+        valorDepoisDeRotulo(
+            bloco,
+            "Outros"
+        );
+
+
+    return {
+
+        bruto:
+            bruto,
+
+        inss:
+            inss,
+
+        outros:
+            outros,
+
+        liquido:
+            liquido
+
+    };
 
 }
 
@@ -877,7 +1349,17 @@ function analisarExtrato(texto) {
 
         irrf: null,
 
+        feriasBruto: null,
+
         feriasLiquido: null,
+
+        feriasOutros: null,
+
+        decimoBruto: null,
+
+        inssDecimo: null,
+
+        outrosDecimo: null,
 
         decimoLiquido: null,
 
@@ -888,38 +1370,41 @@ function analisarExtrato(texto) {
 
 
     /* =====================================
-       BRUTO / MMO
+       MMO TOTAL
     ===================================== */
 
-    const padroesBruto = [
+    const padroesMMO = [
 
-        /MMO\s*Total[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
+        /MMO\s*TOTAL\s*[:=\-]?\s*/i,
 
-        /MMO\s*TOTAL[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
+        /MMO\s*Total\s*[:=\-]?\s*/i,
 
-        /Mão\s*de\s*Obra[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
+        /MMO\s*TOTAL/i,
 
-        /Sal[aá]rio\s*Bruto[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
-
-        /Bruto[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i
+        /MMO/i
 
     ];
 
 
     for (
-        const padrao of padroesBruto
+        const padrao of padroesMMO
     ) {
 
-        const encontrado =
-            texto.match(padrao);
+        const valor =
+            valorAssociado(
+                texto,
+                padrao.source,
+                150
+            );
 
 
-        if (encontrado) {
+        if (
+            valor !== null &&
+            valor > 0
+        ) {
 
             resultado.bruto =
-                converterNumero(
-                    encontrado[1]
-                );
+                arredondar(valor);
 
             break;
 
@@ -929,35 +1414,73 @@ function analisarExtrato(texto) {
 
 
 
-    /* =====================================
-       INSS
-    ===================================== */
+    /*
+       Caso a estrutura do PDF tenha
+       "MMO Total" em uma linha e
+       o valor em outra.
+    */
 
-    const padroesInss = [
-
-        /INSS[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
-
-        /I\.N\.S\.S\.[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i
-
-    ];
-
-
-    for (
-        const padrao of padroesInss
+    if (
+        resultado.bruto === null
     ) {
 
-        const encontrado =
-            texto.match(padrao);
+        const linhas =
+            texto.split("\n");
 
 
-        if (encontrado) {
+        resultado.bruto =
+            valorNaLinha(
+                linhas,
+                /MMO\s*TOTAL/i
+            );
 
-            resultado.inss =
-                converterNumero(
-                    encontrado[1]
+    }
+
+
+
+    /*
+       Outras formas de identificação
+       do bruto.
+    */
+
+    if (
+        resultado.bruto === null
+    ) {
+
+        const alternativas = [
+
+            /M[ÃA]O\s*DE\s*OBRA/i,
+
+            /SAL[ÁA]RIO\s*BRUTO/i,
+
+            /BRUTO/i
+
+        ];
+
+
+        for (
+            const rotulo of alternativas
+        ) {
+
+            const valor =
+                valorAssociado(
+                    texto,
+                    rotulo.source,
+                    150
                 );
 
-            break;
+
+            if (
+                valor !== null &&
+                valor > 0
+            ) {
+
+                resultado.bruto =
+                    arredondar(valor);
+
+                break;
+
+            }
 
         }
 
@@ -966,38 +1489,64 @@ function analisarExtrato(texto) {
 
 
     /* =====================================
-       IRRF / IRPF
+       INSS PRINCIPAL
     ===================================== */
 
-    const padroesIrrf = [
-
-        /IRRF[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
-
-        /IRPF[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
-
-        /Imposto\s*de\s*Renda[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i
-
-    ];
+    const inssEncontrado =
+        valorAssociado(
+            texto,
+            /INSS/i.source,
+            150
+        );
 
 
-    for (
-        const padrao of padroesIrrf
+    if (
+        inssEncontrado !== null
     ) {
 
-        const encontrado =
-            texto.match(padrao);
+        resultado.inss =
+            arredondar(
+                inssEncontrado
+            );
+
+    }
 
 
-        if (encontrado) {
 
-            resultado.irrf =
-                converterNumero(
-                    encontrado[1]
-                );
+    /* =====================================
+       IRRF
+    ===================================== */
 
-            break;
+    let irrfEncontrado =
+        valorAssociado(
+            texto,
+            /IRRF/i.source,
+            150
+        );
 
-        }
+
+    if (
+        irrfEncontrado === null
+    ) {
+
+        irrfEncontrado =
+            valorAssociado(
+                texto,
+                /IRPF/i.source,
+                150
+            );
+
+    }
+
+
+    if (
+        irrfEncontrado !== null
+    ) {
+
+        resultado.irrf =
+            arredondar(
+                irrfEncontrado
+            );
 
     }
 
@@ -1007,82 +1556,78 @@ function analisarExtrato(texto) {
        FÉRIAS
     ===================================== */
 
-    const feriasLiquidas = [
-
-        /F[ée]rias\s*L[ií]quidas[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
-
-        /F[ée]rias[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i
-
-    ];
+    const ferias =
+        extrairFerias(texto);
 
 
-    for (
-        const padrao of feriasLiquidas
-    ) {
+    resultado.feriasBruto =
+        ferias.bruto !== null
+            ? arredondar(
+                ferias.bruto
+            )
+            : null;
 
-        const encontrado =
-            texto.match(padrao);
+
+    resultado.feriasLiquido =
+        ferias.liquido !== null
+            ? arredondar(
+                ferias.liquido
+            )
+            : null;
 
 
-        if (encontrado) {
-
-            resultado.feriasLiquido =
-                converterNumero(
-                    encontrado[1]
-                );
-
-            break;
-
-        }
-
-    }
+    resultado.feriasOutros =
+        ferias.outros !== null
+            ? arredondar(
+                ferias.outros
+            )
+            : null;
 
 
 
     /* =====================================
-       13º SALÁRIO
+       13º
     ===================================== */
 
-    const decimo = [
-
-        /13[ºo°]?\s*sal[aá]rio\s*l[ií]quido[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i,
-
-        /13[ºo°]?[^\d]*(\d{1,3}(?:\.\d{3})*,\d{2})/i
-
-    ];
+    const decimo =
+        extrairDecimo(texto);
 
 
-    for (
-        const padrao of decimo
-    ) {
+    resultado.decimoBruto =
+        decimo.bruto !== null
+            ? arredondar(
+                decimo.bruto
+            )
+            : null;
 
-        const encontrado =
-            texto.match(padrao);
+
+    resultado.inssDecimo =
+        decimo.inss !== null
+            ? arredondar(
+                decimo.inss
+            )
+            : null;
 
 
-        if (encontrado) {
+    resultado.outrosDecimo =
+        decimo.outros !== null
+            ? arredondar(
+                decimo.outros
+            )
+            : null;
 
-            resultado.decimoLiquido =
-                converterNumero(
-                    encontrado[1]
-                );
 
-            break;
-
-        }
-
-    }
+    resultado.decimoLiquido =
+        decimo.liquido !== null
+            ? arredondar(
+                decimo.liquido
+            )
+            : null;
 
 
 
     /* =====================================
        ENGAJAMENTOS — S.BRUTO
-
-       Procura linhas como:
-
-       S.Bruto 316,98
-       S. Bruto 316,98
-       S.Bruto: 316,98
     ===================================== */
 
     const regexEngajamento =
@@ -1103,7 +1648,9 @@ function analisarExtrato(texto) {
             );
 
 
-        if (valor > 0) {
+        if (
+            valor > 0
+        ) {
 
             resultado.engajamentos.push(
                 valor
@@ -1122,8 +1669,10 @@ function analisarExtrato(texto) {
     resultado.engajamentos =
         resultado.engajamentos.filter(
             (valor, index, array) =>
-                index === array.indexOf(valor)
+                index ===
+                array.indexOf(valor)
         );
+
 
 
     return resultado;
@@ -1150,10 +1699,12 @@ async function lerTXT(file) {
 
 async function lerPDF(file) {
 
-    if (!window.pdfjsLib) {
+    if (
+        !window.pdfjsLib
+    ) {
 
         throw new Error(
-            "Biblioteca PDF.js não carregada."
+            "Biblioteca PDF.js não foi carregada."
         );
 
     }
@@ -1163,13 +1714,38 @@ async function lerPDF(file) {
         await file.arrayBuffer();
 
 
+    if (
+        !arrayBuffer ||
+        arrayBuffer.byteLength === 0
+    ) {
+
+        throw new Error(
+            "O arquivo PDF está vazio."
+        );
+
+    }
+
+
+    const loadingTask =
+        pdfjsLib.getDocument({
+
+            data:
+                new Uint8Array(
+                    arrayBuffer
+                ),
+
+            useWorkerFetch: true,
+
+            isEvalSupported: true
+
+        });
+
+
     const pdf =
-        await pdfjsLib.getDocument({
-            data: arrayBuffer
-        }).promise;
+        await loadingTask.promise;
 
 
-    let texto = "";
+    let paginas = [];
 
 
     for (
@@ -1179,27 +1755,67 @@ async function lerPDF(file) {
     ) {
 
         const page =
-            await pdf.getPage(pagina);
+            await pdf.getPage(
+                pagina
+            );
 
 
         const content =
-            await page.getTextContent();
+            await page.getTextContent({
+
+                normalizeWhitespace: true,
+
+                disableCombineTextItems: false
+
+            });
 
 
-        const linhas =
+        /*
+           Mantém os itens separados por espaço.
+           Isso facilita localizar rótulos e valores
+           em PDFs que usam tabelas.
+        */
+
+        const itens =
             content.items
-                .map(item => item.str)
-                .join(" ");
+                .map(
+                    item =>
+                        item.str
+                )
+                .filter(
+                    item =>
+                        item &&
+                        item.trim()
+                );
 
 
-        texto +=
-            "\n" +
-            linhas;
+        const textoPagina =
+            itens.join(" ");
+
+
+        paginas.push(
+            textoPagina
+        );
 
     }
 
 
-    return texto;
+    const textoFinal =
+        paginas.join("\n");
+
+
+    if (
+        !textoFinal.trim()
+    ) {
+
+        throw new Error(
+            "O PDF foi aberto, mas não possui texto selecionável. Se for um PDF digitalizado como imagem, será necessário OCR."
+        );
+
+    }
+
+
+    return textoFinal;
 
 }
 
@@ -1226,7 +1842,7 @@ async function processarExtrato(file) {
 
 
     status.innerHTML =
-        "Lendo o extrato...";
+        "Lendo o extrato PDF...";
 
 
     try {
@@ -1234,10 +1850,12 @@ async function processarExtrato(file) {
         let texto = "";
 
 
+        const nome =
+            file.name.toLowerCase();
+
+
         if (
-            file.name
-                .toLowerCase()
-                .endsWith(".pdf")
+            nome.endsWith(".pdf")
         ) {
 
             texto =
@@ -1245,27 +1863,48 @@ async function processarExtrato(file) {
 
         }
 
-        else {
+        else if (
+            nome.endsWith(".txt")
+        ) {
 
             texto =
                 await lerTXT(file);
 
         }
 
+        else {
+
+            throw new Error(
+                "Formato de arquivo não suportado."
+            );
+
+        }
+
 
         dadosExtrato =
-            analisarExtrato(texto);
+            analisarExtrato(
+                texto
+            );
 
 
         const encontrados = [];
 
 
-        if (dadosExtrato.bruto !== null) {
+        /* =====================================
+           MMO
+        ===================================== */
+
+        if (
+            dadosExtrato.bruto !== null
+        ) {
 
             encontrados.push(
-                "MMO/bruto: " +
-                dinheiro(dadosExtrato.bruto)
+                "MMO Total: " +
+                dinheiro(
+                    dadosExtrato.bruto
+                )
             );
+
 
             document.getElementById(
                 "bruto"
@@ -1273,47 +1912,184 @@ async function processarExtrato(file) {
                 dadosExtrato.bruto.toLocaleString(
                     "pt-BR",
                     {
-                        minimumFractionDigits: 2
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2
                     }
                 );
 
         }
 
 
-        if (dadosExtrato.inss !== null) {
+
+        /* =====================================
+           INSS
+        ===================================== */
+
+        if (
+            dadosExtrato.inss !== null
+        ) {
 
             encontrados.push(
                 "INSS: " +
-                dinheiro(dadosExtrato.inss)
+                dinheiro(
+                    dadosExtrato.inss
+                )
             );
 
         }
 
 
-        if (dadosExtrato.irrf !== null) {
+
+        /* =====================================
+           IRRF
+        ===================================== */
+
+        if (
+            dadosExtrato.irrf !== null
+        ) {
 
             encontrados.push(
                 "IRRF: " +
-                dinheiro(dadosExtrato.irrf)
+                dinheiro(
+                    dadosExtrato.irrf
+                )
+            );
+
+        }
+
+
+
+        /* =====================================
+           FÉRIAS
+        ===================================== */
+
+        if (
+            dadosExtrato.feriasBruto !== null
+        ) {
+
+            encontrados.push(
+                "Férias bruto: " +
+                dinheiro(
+                    dadosExtrato.feriasBruto
+                )
             );
 
         }
 
 
         if (
-            dadosExtrato.engajamentos.length
-            > 0
+            dadosExtrato.feriasLiquido !== null
         ) {
 
             encontrados.push(
+                "Férias líquido: " +
+                dinheiro(
+                    dadosExtrato.feriasLiquido
+                )
+            );
 
-                dadosExtrato.engajamentos.length +
-                " engajamento(s)"
+        }
+
+
+        if (
+            dadosExtrato.feriasOutros !== null
+        ) {
+
+            encontrados.push(
+                "Outros férias: " +
+                dinheiro(
+                    dadosExtrato.feriasOutros
+                )
+            );
+
+        }
+
+
+
+        /* =====================================
+           13º
+        ===================================== */
+
+        if (
+            dadosExtrato.decimoBruto !== null
+        ) {
+
+            encontrados.push(
+                "13º bruto: " +
+                dinheiro(
+                    dadosExtrato.decimoBruto
+                )
+            );
+
+        }
+
+
+        if (
+            dadosExtrato.inssDecimo !== null
+        ) {
+
+            encontrados.push(
+                "INSS 13º: " +
+                dinheiro(
+                    dadosExtrato.inssDecimo
+                )
+            );
+
+        }
+
+
+        if (
+            dadosExtrato.outrosDecimo !== null
+        ) {
+
+            encontrados.push(
+                "Outros 13º: " +
+                dinheiro(
+                    dadosExtrato.outrosDecimo
+                )
+            );
+
+        }
+
+
+        if (
+            dadosExtrato.decimoLiquido !== null
+        ) {
+
+            encontrados.push(
+                "13º líquido: " +
+                dinheiro(
+                    dadosExtrato.decimoLiquido
+                )
 
             );
 
         }
 
+
+
+        /* =====================================
+           ENGAJAMENTOS
+        ===================================== */
+
+        if (
+            dadosExtrato.engajamentos.length > 0
+        ) {
+
+            encontrados.push(
+
+                dadosExtrato.engajamentos.length +
+                " engajamento(s) encontrado(s)"
+
+            );
+
+        }
+
+
+
+        /* =====================================
+           RESULTADO DA LEITURA
+        ===================================== */
 
         if (
             encontrados.length > 0
@@ -1324,7 +2100,7 @@ async function processarExtrato(file) {
 
 
             status.innerHTML =
-                "<strong>Dados encontrados:</strong><br>" +
+                "<strong>PDF lido com sucesso.</strong><br><br>" +
                 encontrados.join("<br>");
 
         }
@@ -1336,8 +2112,8 @@ async function processarExtrato(file) {
 
 
             status.innerHTML =
-                "<strong>Não foi possível identificar automaticamente os dados.</strong><br>" +
-                "Informe o bruto manualmente.";
+                "<strong>PDF aberto, mas os campos não foram identificados.</strong><br>" +
+                "Verifique se o PDF possui texto selecionável ou informe o MMO manualmente.";
 
         }
 
@@ -1346,7 +2122,10 @@ async function processarExtrato(file) {
 
     catch (erro) {
 
-        console.error(erro);
+        console.error(
+            "Erro ao processar extrato:",
+            erro
+        );
 
 
         status.className =
@@ -1354,8 +2133,10 @@ async function processarExtrato(file) {
 
 
         status.innerHTML =
-            "Erro ao ler o arquivo. " +
-            "Você pode informar o bruto manualmente.";
+            "<strong>Não foi possível ler o PDF.</strong><br>" +
+            erro.message +
+            "<br><br>" +
+            "Se o PDF for uma imagem digitalizada, ele precisará de OCR.";
 
     }
 
@@ -1402,7 +2183,9 @@ function calcularINSSProgressivo(
         Number(salario) || 0;
 
 
-    if (salario <= 0) {
+    if (
+        salario <= 0
+    ) {
 
         return 0;
 
@@ -1505,7 +2288,9 @@ function calcularINSSProgressivo(
     }
 
 
-    return arredondar(inss);
+    return arredondar(
+        inss
+    );
 
 }
 
@@ -1513,8 +2298,6 @@ function calcularINSSProgressivo(
 
 /* =====================================
    MÉTODO OGMO
-
-   Cálculo acumulado por engajamento
 ===================================== */
 
 function calcularINSSOGMO(
@@ -1568,7 +2351,9 @@ function calcularINSSOGMO(
                     index + 1,
 
                 bruto:
-                    arredondar(valor),
+                    arredondar(
+                        valor
+                    ),
 
                 acumulado:
                     arredondar(
@@ -1607,9 +2392,6 @@ function calcularINSSOGMO(
 
 /* =====================================
    FUNÇÃO PRINCIPAL DO INSS
-
-   Mantém o mesmo nome usado
-   pelo restante da calculadora.
 ===================================== */
 
 function calcularINSS(
@@ -1626,18 +2408,6 @@ function calcularINSS(
 
 /* =====================================
    IRPF 2026
-
-   REGRA DA CALCULADORA:
-
-   BRUTO
-   +
-   FÉRIAS LÍQUIDAS
-   +
-   13º LÍQUIDO
-
-   A redução de 2026 é aplicada
-   quando o total mensal passa
-   da faixa de R$ 5.000.
 ===================================== */
 
 function calcularIRPF(
@@ -1656,10 +2426,6 @@ function calcularIRPF(
 
     }
 
-
-    /*
-       Tabela progressiva.
-    */
 
     const descontoSimplificado =
         607.20;
@@ -1727,10 +2493,6 @@ function calcularIRPF(
     }
 
 
-    /*
-       Redução de 2026.
-    */
-
     let reducao = 0;
 
 
@@ -1772,6 +2534,148 @@ function calcularIRPF(
 
 
 /* =====================================
+   CALCULAR FÉRIAS POR MMO
+===================================== */
+
+function calcularFeriasPorMMO(
+    mmo
+) {
+
+    /*
+       Proporção baseada no contracheque real:
+
+       MMO 5.076,05
+       Férias bruto 615,17
+    */
+
+    const feriasBruto =
+        arredondar(
+            mmo *
+            (
+                REFERENCIA.feriasBruto /
+                REFERENCIA.mmo
+            )
+        );
+
+
+    /*
+       Líquido proporcional ao
+       contracheque real.
+
+       526,18 / 615,17
+    */
+
+    const feriasLiquido =
+        arredondar(
+            feriasBruto *
+            (
+                REFERENCIA.feriasLiquido /
+                REFERENCIA.feriasBruto
+            )
+        );
+
+
+    const feriasOutros =
+        arredondar(
+            feriasBruto *
+            (
+                REFERENCIA.feriasOutros /
+                REFERENCIA.feriasBruto
+            )
+        );
+
+
+    return {
+
+        bruto:
+            feriasBruto,
+
+        outros:
+            feriasOutros,
+
+        liquido:
+            feriasLiquido
+
+    };
+
+}
+
+
+
+/* =====================================
+   CALCULAR 13º POR MMO
+===================================== */
+
+function calcularDecimoPorMMO(
+    mmo
+) {
+
+    /*
+       Proporção baseada no contracheque real:
+
+       MMO 5.076,05
+       13º bruto 461,43
+    */
+
+    const decimoBruto =
+        arredondar(
+            mmo *
+            (
+                REFERENCIA.decimoBruto /
+                REFERENCIA.mmo
+            )
+        );
+
+
+    const inssDecimo =
+        arredondar(
+            decimoBruto *
+            (
+                REFERENCIA.inssDecimo /
+                REFERENCIA.decimoBruto
+            )
+        );
+
+
+    const outrosDecimo =
+        arredondar(
+            decimoBruto *
+            (
+                REFERENCIA.outrosDecimo /
+                REFERENCIA.decimoBruto
+            )
+        );
+
+
+    const decimoLiquido =
+        arredondar(
+            decimoBruto -
+            inssDecimo -
+            outrosDecimo
+        );
+
+
+    return {
+
+        bruto:
+            decimoBruto,
+
+        inss:
+            inssDecimo,
+
+        outros:
+            outrosDecimo,
+
+        liquido:
+            decimoLiquido
+
+    };
+
+}
+
+
+
+/* =====================================
    CALCULADORA
 ===================================== */
 
@@ -1796,13 +2700,11 @@ function calcular() {
 
 
     /*
-       Se o extrato encontrou
-       um bruto válido, ele pode
-       ser usado automaticamente.
+       O MMO encontrado no extrato
+       passa a ser a base principal.
     */
 
     if (
-        bruto <= 0 &&
         dadosExtrato.bruto !== null
     ) {
 
@@ -1818,7 +2720,7 @@ function calcular() {
     ) {
 
         alert(
-            "Informe o valor bruto ou anexe um extrato válido."
+            "Informe o MMO ou anexe um extrato válido."
         );
 
         return;
@@ -1884,8 +2786,7 @@ function calcular() {
 
     if (
         dadosExtrato.engajamentos &&
-        dadosExtrato.engajamentos.length
-        > 0
+        dadosExtrato.engajamentos.length > 0
     ) {
 
         resultadoOgmo =
@@ -1901,18 +2802,7 @@ function calcular() {
 
 
 
-    /*
-       Para o cálculo principal:
-
-       Se existem engajamentos no extrato,
-       utiliza o método OGMO.
-
-       Caso contrário, utiliza o
-       cálculo consolidado.
-    */
-
     let inss;
-
 
     let metodoInss;
 
@@ -1944,8 +2834,10 @@ function calcular() {
     /* =====================================
        FÉRIAS
 
-       Mantido sem alteração
-       da estrutura original.
+       PRIORIDADE:
+
+       1. Valor líquido encontrado no PDF
+       2. Projeção pelo MMO Total
     ===================================== */
 
     let feriasLiquido;
@@ -1962,20 +2854,14 @@ function calcular() {
 
     else {
 
-        const feriasBruto =
-            bruto *
-            (
-                512.27 /
-                4226.79
+        const ferias =
+            calcularFeriasPorMMO(
+                bruto
             );
 
 
         feriasLiquido =
-            feriasBruto *
-            (
-                431.77 /
-                512.27
-            );
+            ferias.liquido;
 
     }
 
@@ -1984,8 +2870,10 @@ function calcular() {
     /* =====================================
        13º
 
-       Mantido sem alteração
-       da estrutura original.
+       PRIORIDADE:
+
+       1. Valor líquido encontrado no PDF
+       2. Projeção pelo MMO Total
     ===================================== */
 
     let decimoLiquido;
@@ -2002,34 +2890,14 @@ function calcular() {
 
     else {
 
-        const decimoBruto =
-            bruto *
-            (
-                384.22 /
-                4226.79
-            );
-
-
-        const inssDecimo =
-            decimoBruto *
-            (
-                34.26 /
-                384.22
-            );
-
-
-        const outrosDecimo =
-            decimoBruto *
-            (
-                27.90 /
-                384.22
+        const decimo =
+            calcularDecimoPorMMO(
+                bruto
             );
 
 
         decimoLiquido =
-            decimoBruto -
-            inssDecimo -
-            outrosDecimo;
+            decimo.liquido;
 
     }
 
@@ -2037,7 +2905,7 @@ function calcular() {
 
     /* =====================================
        TRANSPORTE
-    ===================================== */
+===================================== */
 
     const transportePorTrabalho =
 
@@ -2062,7 +2930,7 @@ function calcular() {
 
     /* =====================================
        ALIMENTAÇÃO
-    ===================================== */
+===================================== */
 
     const refeicaoPorTrabalho =
 
@@ -2087,7 +2955,7 @@ function calcular() {
 
     /* =====================================
        1º DEPÓSITO
-    ===================================== */
+===================================== */
 
     const deposito1 =
 
@@ -2099,7 +2967,7 @@ function calcular() {
 
     /* =====================================
        2º DEPÓSITO
-    ===================================== */
+===================================== */
 
     const deposito2 =
 
@@ -2109,8 +2977,8 @@ function calcular() {
 
 
     /* =====================================
-       SOMATÓRIO DOS DEPÓSITOS
-    ===================================== */
+       SOMATÓRIO
+===================================== */
 
     const somaDepositos =
 
@@ -2121,20 +2989,13 @@ function calcular() {
 
     /* =====================================
        BASE IRPF
-
-       BRUTO
-       +
-       FÉRIAS LÍQUIDAS
-       +
-       13º LÍQUIDO
-    ===================================== */
+===================================== */
 
     const baseIR =
 
         bruto +
         feriasLiquido +
         decimoLiquido;
-
 
 
     const irpf =
@@ -2146,7 +3007,7 @@ function calcular() {
 
     /* =====================================
        LÍQUIDO DO SALÁRIO
-    ===================================== */
+===================================== */
 
     const liquidoSalario =
 
@@ -2158,8 +3019,8 @@ function calcular() {
 
 
     /* =====================================
-       TOTAL EM DINHEIRO
-    ===================================== */
+       TOTAL
+===================================== */
 
     const total =
 
@@ -2170,9 +3031,7 @@ function calcular() {
 
     /* =====================================
        FGTS
-
-       Mantido sem alteração.
-    ===================================== */
+===================================== */
 
     const fgts =
 
@@ -2186,7 +3045,7 @@ function calcular() {
 
     /* =====================================
        COMPARAÇÃO INSS
-    ===================================== */
+===================================== */
 
     let diferencaInss = null;
 
@@ -2207,7 +3066,7 @@ function calcular() {
 
     /* =====================================
        COMPARAÇÃO IRRF
-    ===================================== */
+===================================== */
 
     let diferencaIrrf = null;
 
@@ -2227,8 +3086,8 @@ function calcular() {
 
 
     /* =====================================
-       EXIBIR
-    ===================================== */
+       EXIBIR SALÁRIO
+===================================== */
 
     document.getElementById(
         "rBruto"
@@ -2268,7 +3127,7 @@ function calcular() {
 
     /* =====================================
        INSS DETALHADO
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "rMetodoInss"
@@ -2289,7 +3148,9 @@ function calcular() {
     ).innerText =
         inssOgmo === null
             ? "Não disponível"
-            : dinheiro(inssOgmo);
+            : dinheiro(
+                inssOgmo
+            );
 
 
     document.getElementById(
@@ -2315,7 +3176,7 @@ function calcular() {
 
     /* =====================================
        DETALHAMENTO OGMO
-    ===================================== */
+===================================== */
 
     if (
         resultadoOgmo !== null
@@ -2337,40 +3198,48 @@ function calcular() {
 
 
         resultadoOgmo.historico
-            .forEach(item => {
+            .forEach(
+                item => {
 
-                const div =
-                    document.createElement(
-                        "div"
+                    const div =
+                        document.createElement(
+                            "div"
+                        );
+
+
+                    div.className =
+                        "engajamento";
+
+
+                    div.innerHTML =
+
+                        "<span>" +
+
+                        item.engajamento +
+
+                        "º — " +
+
+                        dinheiro(
+                            item.bruto
+                        ) +
+
+                        "</span>" +
+
+                        "<strong>" +
+
+                        dinheiro(
+                            item.inss
+                        ) +
+
+                        "</strong>";
+
+
+                    lista.appendChild(
+                        div
                     );
 
-
-                div.className =
-                    "engajamento";
-
-
-                div.innerHTML =
-
-                    "<span>" +
-
-                    item.engajamento +
-
-                    "º — " +
-
-                    dinheiro(item.bruto) +
-
-                    "</span>" +
-
-                    "<strong>" +
-
-                    dinheiro(item.inss) +
-
-                    "</strong>";
-
-
-                lista.appendChild(div);
-
-            });
+                }
+            );
 
     }
 
@@ -2387,7 +3256,7 @@ function calcular() {
 
     /* =====================================
        1º DEPÓSITO
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "rTransporte"
@@ -2424,7 +3293,7 @@ function calcular() {
 
     /* =====================================
        2º DEPÓSITO
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "rFeriasLiquido"
@@ -2453,7 +3322,7 @@ function calcular() {
 
     /* =====================================
        SOMATÓRIO
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "rSomaDepositos"
@@ -2466,7 +3335,7 @@ function calcular() {
 
     /* =====================================
        IRPF
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "rBaseSalario"
@@ -2531,7 +3400,7 @@ function calcular() {
 
     /* =====================================
        RESUMO
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "rResumoSalario"
@@ -2584,7 +3453,7 @@ function calcular() {
 
     /* =====================================
        MOSTRAR RESULTADO
-    ===================================== */
+===================================== */
 
     document.getElementById(
         "resultado"
@@ -2599,3 +3468,4 @@ function calcular() {
 </body>
 
 </html>
+```
